@@ -41,7 +41,7 @@ class TransparentVideoView(context: Context, appContext: AppContext) : ExpoView(
 
   var videoAspectRatio: Float? = null
 
-  private lateinit var mediaPlayerSurface: Surface
+  private var mediaPlayerSurface: Surface? = null
   private val coroutineScope = CoroutineScope(Dispatchers.Main)
   private val onFrameAvailable = MutableSharedFlow<Unit>(extraBufferCapacity = Channel.UNLIMITED)
   private val renderer = TransparentVideoRenderer(onSurfaceTextureCreated = { surface -> onSurfaceTextureCreated(surface) })
@@ -58,11 +58,13 @@ class TransparentVideoView(context: Context, appContext: AppContext) : ExpoView(
         var height = MeasureSpec.getSize(heightMeasureSpec)
         val viewAspectRatio = width.toFloat() / height.toFloat()
         val aspectDeformation = (ratio / viewAspectRatio) - 1f
+
         if (abs(aspectDeformation) <= 0.01f) {
           // We're within the allowed tolerance.
           super.onMeasure(widthMeasureSpec, heightMeasureSpec)
           return
         }
+
         if (aspectDeformation > 0) {
           width = (height * ratio).toInt()
         } else {
@@ -70,12 +72,11 @@ class TransparentVideoView(context: Context, appContext: AppContext) : ExpoView(
         }
 
         super.onMeasure(
-            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
-            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY))
+          MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+          MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY)
+        )
       }
     }
-  }.also {
-    onSurfaceTextureCreated(it.surfaceTexture ?: return@also)
   }.apply {
     surfaceTextureListener = GLTextureViewListener(coroutineScope, renderer, onFrameAvailable)
     isOpaque = false
@@ -88,15 +89,43 @@ class TransparentVideoView(context: Context, appContext: AppContext) : ExpoView(
     addView(textureView)
   }
 
-
   private fun onSurfaceTextureCreated(surfaceTexture: SurfaceTexture) {
-    surfaceTexture.setOnFrameAvailableListener { onFrameAvailable.tryEmit(Unit) }
-    val surface = Surface(surfaceTexture).also { mediaPlayerSurface = it }
-    coroutineScope.launch {
-      videoPlayer?.player?.setVideoSurface(surface)
-      videoPlayer?.onEndCallback = onEnd
-      videoPlayer?.onErrorCallback = onError
-      videoPlayer?.onProgress = onProgress
+    try {
+      surfaceTexture.setOnFrameAvailableListener { onFrameAvailable.tryEmit(Unit) }
+      val surface = Surface(surfaceTexture)
+      mediaPlayerSurface = surface
+
+      coroutineScope.launch {
+        videoPlayer?.player?.setVideoSurface(surface)
+        videoPlayer?.onEndCallback = onEnd
+        videoPlayer?.onErrorCallback = onError
+        videoPlayer?.onProgress = onProgress
+      }
+    } catch (e: Exception) {
+      onError(mapOf("error" to e.message.toString()))
+    }
+  }
+
+  override fun onAttachedToWindow() {
+    super.onAttachedToWindow()
+
+    if (textureView.surfaceTexture != null) {
+      onSurfaceTextureCreated(textureView.surfaceTexture!!)
+    }
+  }
+
+  override fun onDetachedFromWindow() {
+    releaseMediaPlayer()
+    super.onDetachedFromWindow()
+  }
+
+  private fun releaseMediaPlayer() {
+    try {
+      videoPlayer?.player?.clearVideoSurface()
+      mediaPlayerSurface?.release()
+      mediaPlayerSurface = null
+    } catch (e: Exception) {
+      // No-op
     }
   }
 
